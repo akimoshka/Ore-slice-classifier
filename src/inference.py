@@ -13,7 +13,6 @@ from pathlib import Path
 import tempfile
 from typing import Callable, Iterable
 
-import cv2
 os.environ.setdefault("MPLCONFIGDIR", str(Path(tempfile.gettempdir()) / "ore_vision_matplotlib"))
 import matplotlib.pyplot as plt
 import numpy as np
@@ -102,10 +101,18 @@ def iter_tiles(image: Image.Image, tile_size: int, overlap: int, max_tiles: int)
 
 def _sulfide_proxy(tile: Image.Image) -> float:
     array = np.asarray(tile.resize((256, 256)), dtype=np.uint8)
-    hsv = cv2.cvtColor(array, cv2.COLOR_RGB2HSV)
-    gray = cv2.cvtColor(array, cv2.COLOR_RGB2GRAY)
+    rgb = array.astype(np.float32)
+    gray = 0.299 * rgb[:, :, 0] + 0.587 * rgb[:, :, 1] + 0.114 * rgb[:, :, 2]
+    channel_max = rgb.max(axis=2)
+    channel_min = rgb.min(axis=2)
+    saturation = np.divide(
+        channel_max - channel_min,
+        channel_max,
+        out=np.zeros_like(channel_max),
+        where=channel_max > 0,
+    )
     # Bright, weakly saturated pixels are a conservative proxy for light sulfides.
-    return float(((gray >= 185) & (hsv[:, :, 1] <= 105)).mean())
+    return float(((gray >= 185) & (saturation <= (105 / 255))).mean())
 
 
 @torch.inference_mode()
