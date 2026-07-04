@@ -12,3 +12,14 @@ outputs/
 .env
 .DS_Store
 .ipynb_checkpoints/
+
+# Claude Code local files
+.claude/
+
+# Redundant training artifact (duplicate of unet_talc.pth)
+models/unet_talc_last.pth
+
+# Trained talc U-Net weights (~55 MB): too large for the repo and optional for
+# the app (segmentation tab degrades gracefully). Retrain with
+# `python -m src.segmentation.train_talc` to regenerate locally.
+models/unet_talc.pth

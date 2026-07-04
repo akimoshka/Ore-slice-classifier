@@ -4,6 +4,7 @@ import sys
 from io import BytesIO
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import streamlit as st
 from PIL import Image
@@ -16,6 +17,7 @@ from src.inference import (  # noqa: E402
     CLASS_COLORS, CLASS_TITLES, analyze_image, build_model, make_confidence_map,
     make_overlay, make_pdf_report, metrics_frame, tiles_geojson,
 )
+from src.segmentation import infer as seg  # noqa: E402
 
 st.set_page_config(page_title="Ore Vision · Анализ шлифов", page_icon="◉", layout="wide")
 
@@ -80,6 +82,15 @@ def load_model(model_name: str):
     if not path.exists():
         raise FileNotFoundError(f"Не найдены веса модели: {path}")
     return build_model(model_name, path)
+
+
+@st.cache_resource(show_spinner=False)
+def load_talc_segmenter():
+    """Load the standalone talc U-Net (separate model from the classifier)."""
+    path = ROOT / "models" / "unet_talc.pth"
+    if not path.exists():
+        return None
+    return seg.load_talc_model(path)
 
 
 def read_image(uploaded) -> Image.Image:
@@ -191,7 +202,47 @@ for file_index, uploaded in enumerate(uploaded_files):
         metric_cols[2].metric("Сульфидные области", f'{result["sulfide_share"]:.1%}')
         metric_cols[3].metric("Уверенность", f'{result["mean_confidence"]:.1%}', f'{result["tile_count"]} тайлов')
 
-        tab_map, tab_conf, tab_metrics, tab_tiles = st.tabs(["Карта классов", "Карта уверенности", "Метрики", "Тайлы"])
+        tab_seg, tab_map, tab_conf, tab_metrics, tab_tiles = st.tabs(
+            ["Пиксельная сегментация", "Карта классов (тайлы)", "Карта уверенности", "Метрики", "Тайлы"]
+        )
+        with tab_seg:
+            segmenter = load_talc_segmenter()
+            if segmenter is None:
+                st.warning(
+                    "Веса сегментатора не найдены (models/unet_talc.pth). "
+                    "Обучите модель: `python -m src.segmentation.train_talc`."
+                )
+            else:
+                with st.spinner("Сегментация фаз (U-Net тальк + CV сульфиды)…"):
+                    seg_result = seg.segment(
+                        np.asarray(image), talc_model=segmenter, ore_talc_threshold=talc_threshold,
+                    )
+                seg_overlay = seg.overlay(seg_result["work_image"], seg_result["labels"])
+                seg_flat = Image.fromarray(seg.colored_mask(seg_result["labels"]))
+                st.markdown(
+                    '<div class="legend">'
+                    '<span><i class="dot" style="background:#22c55e"></i>обычные срастания</span>'
+                    '<span><i class="dot" style="background:#ef4444"></i>тонкие срастания</span>'
+                    '<span><i class="dot" style="background:#3b82f6"></i>тальк</span></div>',
+                    unsafe_allow_html=True,
+                )
+                seg_left, seg_right = st.columns(2)
+                seg_left.image(seg_overlay, caption="Сегментация поверх снимка", use_container_width=True)
+                seg_right.image(seg_flat, caption="Маска фаз (пиксели)", use_container_width=True)
+                seg_metric_cols = st.columns(4)
+                seg_metric_cols[0].metric("Тальк (U-Net)", f'{seg_result["talc_share"]:.1%}')
+                seg_metric_cols[1].metric("Сульфиды", f'{seg_result["sulfide_share"]:.1%}')
+                seg_metric_cols[2].metric("Тонкие срастания", f'{seg_result["fine_share"]:.1%}')
+                seg_metric_cols[3].metric("Обычные срастания", f'{seg_result["ordinary_share"]:.1%}')
+                st.caption(seg.result_text(seg_result))
+                seg_frame = pd.DataFrame(seg.metrics_rows(seg_result), columns=["Метрика", "Значение", "Метод"])
+                st.dataframe(seg_frame, hide_index=True, use_container_width=True)
+                seg_buffer = BytesIO(); seg_overlay.save(seg_buffer, format="PNG")
+                st.download_button(
+                    "Скачать сегментацию (PNG)", seg_buffer.getvalue(),
+                    f"{Path(uploaded.name).stem}_segmentation.png", "image/png",
+                    key=f"seg-{file_index}", use_container_width=True,
+                )
         with tab_map:
             st.markdown('<div class="legend"><span><i class="dot" style="background:#22c55e"></i>обычные</span><span><i class="dot" style="background:#ef4444"></i>тонкие</span><span><i class="dot" style="background:#3b82f6"></i>тальк</span></div>', unsafe_allow_html=True)
             left, right = st.columns(2)

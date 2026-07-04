@@ -4,6 +4,8 @@ pandas
 pillow
 matplotlib
 scikit-image
+opencv-python-headless
+scipy
 torch
 torchvision
 tifffile
