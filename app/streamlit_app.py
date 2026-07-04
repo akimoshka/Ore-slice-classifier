@@ -84,7 +84,21 @@ def load_model(model_name: str):
 
 def read_image(uploaded) -> Image.Image:
     Image.MAX_IMAGE_PIXELS = None
-    return Image.open(BytesIO(uploaded.getvalue())).convert("RGB")
+    source = Image.open(BytesIO(uploaded.getvalue()))
+    original_size = source.size
+    max_pixels = 30_000_000
+    if source.width * source.height > max_pixels:
+        scale = (max_pixels / (source.width * source.height)) ** 0.5
+        target = (max(1, int(source.width * scale)), max(1, int(source.height * scale)))
+        # JPEG can decode directly near the target resolution and avoid a huge
+        # temporary RGB allocation. Other formats fall back to thumbnail below.
+        source.draft("RGB", target)
+    image = source.convert("RGB")
+    if image.width * image.height > max_pixels:
+        scale = (max_pixels / (image.width * image.height)) ** 0.5
+        image.thumbnail((int(image.width * scale), int(image.height * scale)), Image.Resampling.LANCZOS)
+    image.info["ore_original_size"] = original_size
+    return image
 
 
 def result_text(result: dict) -> str:
@@ -144,6 +158,13 @@ for file_index, uploaded in enumerate(uploaded_files):
             st.error(f"Не удалось прочитать изображение: {exc}")
             continue
 
+        original_size = image.info.get("ore_original_size", image.size)
+        if original_size != image.size:
+            st.warning(
+                f"Большая панорама безопасно уменьшена с {original_size[0]}×{original_size[1]} "
+                f"до {image.width}×{image.height} для облачного анализа."
+            )
+
         progress = st.progress(0, text="Анализируем тайлы…")
         try:
             result = analyze_image(
@@ -174,12 +195,12 @@ for file_index, uploaded in enumerate(uploaded_files):
         with tab_map:
             st.markdown('<div class="legend"><span><i class="dot" style="background:#22c55e"></i>обычные</span><span><i class="dot" style="background:#ef4444"></i>тонкие</span><span><i class="dot" style="background:#3b82f6"></i>тальк</span></div>', unsafe_allow_html=True)
             left, right = st.columns(2)
-            left.image(image, caption="Исходное изображение", use_container_width=True)
-            right.image(overlay, caption="Интерпретируемая tile-карта", use_container_width=True)
+            left.image(image, caption="Исходное изображение", width="stretch")
+            right.image(overlay, caption="Интерпретируемая tile-карта", width="stretch")
         with tab_conf:
-            st.image(confidence_map, caption="Ярче — ниже уверенность модели", use_container_width=True)
+            st.image(confidence_map, caption="Ярче — ниже уверенность модели", width="stretch")
         with tab_metrics:
-            st.dataframe(metrics_frame(result), hide_index=True, use_container_width=True)
+            st.dataframe(metrics_frame(result), hide_index=True, width="stretch")
             st.markdown('<div class="note">Доли талька и типов срастаний — оценки по классифицированным тайлам. Для точных пиксельных процентов потребуется отдельная сегментационная модель.</div>', unsafe_allow_html=True)
         with tab_tiles:
             tile_view = result["tiles"].copy()
@@ -194,7 +215,7 @@ for file_index, uploaded in enumerate(uploaded_files):
                     ),
                     "confidence": st.column_config.ProgressColumn("Уверенность", min_value=0.0, max_value=1.0, format="%.2f"),
                 },
-                use_container_width=True, key=f"editor-{file_index}",
+                width="stretch", key=f"editor-{file_index}",
             )
             corrections = edited[edited.corrected_label != edited.pred_label].copy()
             if len(corrections):
@@ -207,13 +228,13 @@ for file_index, uploaded in enumerate(uploaded_files):
 
         export_cols = st.columns(4)
         metrics_csv = metrics_frame(result).to_csv(index=False).encode("utf-8-sig")
-        export_cols[0].download_button("Скачать CSV", metrics_csv, f"{Path(uploaded.name).stem}_metrics.csv", "text/csv", key=f"csv-{file_index}", use_container_width=True)
+        export_cols[0].download_button("Скачать CSV", metrics_csv, f"{Path(uploaded.name).stem}_metrics.csv", "text/csv", key=f"csv-{file_index}", width="stretch")
         pdf = make_pdf_report(uploaded.name, result, overlay)
-        export_cols[1].download_button("Скачать PDF", pdf, f"{Path(uploaded.name).stem}_report.pdf", "application/pdf", key=f"pdf-{file_index}", use_container_width=True)
+        export_cols[1].download_button("Скачать PDF", pdf, f"{Path(uploaded.name).stem}_report.pdf", "application/pdf", key=f"pdf-{file_index}", width="stretch")
         overlay_buffer = BytesIO(); overlay.save(overlay_buffer, format="PNG")
-        export_cols[2].download_button("Скачать карту", overlay_buffer.getvalue(), f"{Path(uploaded.name).stem}_overlay.png", "image/png", key=f"map-{file_index}", use_container_width=True)
+        export_cols[2].download_button("Скачать карту", overlay_buffer.getvalue(), f"{Path(uploaded.name).stem}_overlay.png", "image/png", key=f"map-{file_index}", width="stretch")
         geojson = tiles_geojson(result["tiles"], image.size)
-        export_cols[3].download_button("Скачать GeoJSON", geojson, f"{Path(uploaded.name).stem}_tiles.geojson", "application/geo+json", key=f"geo-{file_index}", use_container_width=True)
+        export_cols[3].download_button("Скачать GeoJSON", geojson, f"{Path(uploaded.name).stem}_tiles.geojson", "application/geo+json", key=f"geo-{file_index}", width="stretch")
         st.caption("GeoJSON использует координаты пикселей изображения; CRS и физический масштаб добавляются только при наличии метаданных съёмки.")
 
         batch_rows.append({
@@ -229,5 +250,5 @@ for file_index, uploaded in enumerate(uploaded_files):
 if len(batch_rows) > 1:
     st.markdown("## Сводка партии")
     batch = pd.DataFrame(batch_rows)
-    st.dataframe(batch, hide_index=True, use_container_width=True)
+    st.dataframe(batch, hide_index=True, width="stretch")
     st.download_button("Скачать сводный CSV", batch.to_csv(index=False).encode("utf-8-sig"), "ore_batch_results.csv", "text/csv")

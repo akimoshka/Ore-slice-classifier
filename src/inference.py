@@ -85,16 +85,24 @@ def _positions(length: int, tile_size: int, stride: int) -> list[int]:
     return result
 
 
-def iter_tiles(image: Image.Image, tile_size: int, overlap: int, max_tiles: int) -> Iterable[tuple]:
+def tile_boxes(image: Image.Image, tile_size: int, overlap: int, max_tiles: int) -> tuple[list[tuple[int, int, int, int]], bool]:
     width, height = image.size
     stride = max(tile_size - overlap, 1)
     xs, ys = _positions(width, tile_size, stride), _positions(height, tile_size, stride)
     coordinates = [(x, y) for y in ys for x in xs]
+    sampled = len(coordinates) > max_tiles
     if len(coordinates) > max_tiles:
         selected = np.linspace(0, len(coordinates) - 1, max_tiles, dtype=int)
         coordinates = [coordinates[index] for index in selected]
-    for x, y in coordinates:
-        x2, y2 = min(x + tile_size, width), min(y + tile_size, height)
+    return [
+        (x, y, min(x + tile_size, width), min(y + tile_size, height))
+        for x, y in coordinates
+    ], sampled
+
+
+def iter_tiles(image: Image.Image, tile_size: int, overlap: int, max_tiles: int) -> Iterable[tuple]:
+    boxes, _ = tile_boxes(image, tile_size, overlap, max_tiles)
+    for x, y, x2, y2 in boxes:
         tile = image.crop((x, y, x2, y2)).convert("RGB")
         yield x, y, x2, y2, tile
 
@@ -127,10 +135,14 @@ def analyze_image(
     progress: Callable[[float], None] | None = None,
 ) -> dict:
     image = image.convert("RGB")
-    tiles = list(iter_tiles(image, tile_size, overlap, max_tiles))
+    boxes, sampled = tile_boxes(image, tile_size, overlap, max_tiles)
     rows: list[dict] = []
-    for start in range(0, len(tiles), batch_size):
-        batch = tiles[start:start + batch_size]
+    # Crop only one batch at a time. Holding hundreds of 512px PIL tiles caused
+    # the Streamlit Cloud worker to exceed its RAM limit on panoramas.
+    for start in range(0, len(boxes), batch_size):
+        batch = []
+        for x1, y1, x2, y2 in boxes[start:start + batch_size]:
+            batch.append((x1, y1, x2, y2, image.crop((x1, y1, x2, y2)).convert("RGB")))
         tensor = torch.stack([VALID_TRANSFORM(item[4]) for item in batch]).to(DEVICE)
         probabilities = torch.softmax(model(tensor), dim=1).cpu().numpy()
         for (x1, y1, x2, y2, tile), probs in zip(batch, probabilities):
@@ -146,7 +158,7 @@ def analyze_image(
                 "sulfide_proxy": _sulfide_proxy(tile),
             })
         if progress:
-            progress(min((start + len(batch)) / len(tiles), 1.0))
+            progress(min((start + len(batch)) / len(boxes), 1.0))
 
     frame = pd.DataFrame(rows)
     total_area = frame.area.sum()
@@ -174,7 +186,7 @@ def analyze_image(
         "mean_confidence": float(np.average(frame.confidence, weights=frame.area)),
         "tiles": frame,
         "tile_count": len(frame),
-        "sampled": len(tiles) == max_tiles,
+        "sampled": sampled,
     }
 
 
