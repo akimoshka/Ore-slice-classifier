@@ -76,6 +76,63 @@ html, body, [class*="css"] {font-family:'Manrope',sans-serif}
 MODEL_LABELS = {"ResNet18 · лучший F1": "resnet18", "MobileNetV3 · быстрый": "mobilenet_v3_small", "TinyCNN · лёгкий": "tinycnn"}
 
 
+@st.cache_data(show_spinner=False)
+def load_ml_summary() -> dict:
+    """Read presentation metrics from training artifacts instead of hardcoding them."""
+    summary = {
+        "classifier_count": len(MODEL_LABELS),
+        "total_models": len(MODEL_LABELS),
+        "best_val_f1": None,
+        "best_classifier": None,
+        "test_f1": None,
+        "test_size": None,
+        "unet_dice": None,
+        "unet_iou": None,
+    }
+    display_names = {
+        "resnet18": "ResNet18",
+        "mobilenet_v3_small": "MobileNetV3",
+        "tinycnn": "TinyCNN",
+    }
+    candidates = []
+    for model_name in display_names:
+        history_path = ROOT / "reports" / f"{model_name}_history.csv"
+        if not history_path.exists():
+            continue
+        history = pd.read_csv(history_path)
+        if "val_macro_f1" in history and history["val_macro_f1"].notna().any():
+            candidates.append((float(history["val_macro_f1"].max()), display_names[model_name]))
+    if candidates:
+        summary["best_val_f1"], summary["best_classifier"] = max(candidates)
+
+    predictions_path = ROOT / "reports" / "resnet18_test_predictions.csv"
+    if predictions_path.exists():
+        predictions = pd.read_csv(predictions_path, usecols=["label", "pred_label"])
+        class_f1 = []
+        for label in sorted(predictions["label"].dropna().unique()):
+            actual = predictions["label"] == label
+            predicted = predictions["pred_label"] == label
+            tp = int((actual & predicted).sum())
+            fp = int((~actual & predicted).sum())
+            fn = int((actual & ~predicted).sum())
+            precision = tp / (tp + fp) if tp + fp else 0.0
+            recall = tp / (tp + fn) if tp + fn else 0.0
+            class_f1.append(2 * precision * recall / (precision + recall) if precision + recall else 0.0)
+        if class_f1:
+            summary["test_f1"] = sum(class_f1) / len(class_f1)
+            summary["test_size"] = len(predictions)
+
+    unet_history_path = ROOT / "reports" / "unet_talc_history.csv"
+    if unet_history_path.exists():
+        history = pd.read_csv(unet_history_path)
+        if "val_dice" in history and history["val_dice"].notna().any():
+            summary["unet_dice"] = float(history["val_dice"].max())
+            summary["total_models"] += 1
+        if "val_iou" in history and history["val_iou"].notna().any():
+            summary["unet_iou"] = float(history["val_iou"].max())
+    return summary
+
+
 @st.cache_resource(show_spinner=False)
 def load_model(model_name: str):
     path = ROOT / "models" / f"{model_name}.pth"
@@ -145,10 +202,28 @@ uploaded_files = st.file_uploader(
 )
 
 if not uploaded_files:
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Классы", "3", "рядовая · трудная · тальк")
-    col2.metric("Лучшая val F1", "87.2%", "ResNet18")
-    col3.metric("Режим", "Tile-based", "для панорам")
+    ml = load_ml_summary()
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("ML-модели", str(ml["total_models"]), "3 классификатора + U-Net")
+    col2.metric(
+        "Лучшая val macro-F1",
+        f'{ml["best_val_f1"]:.1%}' if ml["best_val_f1"] is not None else "—",
+        ml["best_classifier"] or "нет отчёта",
+    )
+    col3.metric(
+        "Test macro-F1",
+        f'{ml["test_f1"]:.1%}' if ml["test_f1"] is not None else "—",
+        f'ResNet18 · {ml["test_size"]} снимков' if ml["test_size"] else "нет отчёта",
+    )
+    col4.metric(
+        "Лучший val Dice",
+        f'{ml["unet_dice"]:.1%}' if ml["unet_dice"] is not None else "—",
+        f'U-Net тальк · IoU {ml["unet_iou"]:.1%}' if ml["unet_iou"] is not None else "сегментатор",
+    )
+    st.caption(
+        "Классификация: ResNet18, MobileNetV3 Small и TinyCNN. "
+        "Пиксельная сегментация талька: ResNet18 U-Net; сульфидные фазы: классический CV."
+    )
     st.info("Загрузите снимок — параметры можно настроить слева. Для демо достаточно обычного JPG.")
     st.stop()
 
