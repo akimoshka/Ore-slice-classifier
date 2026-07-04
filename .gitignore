@@ -6,7 +6,7 @@ __pycache__/
 # Keep only the placeholder so the directory exists after cloning.
 data/**
 !data/.gitkeep
-models/
+# models/
 outputs/
 
 .env
